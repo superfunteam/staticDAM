@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Static File DAM</title>
+<style>
+  :root { --bg:#0b0b0e; --panel:#141419; --ink:#ebebef; --muted:#9aa0a6; --chip:#1d1d24; --acc:#5f87ff; }
+  html,body{ margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px/1.4 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; }
+  header{ display:flex; gap:.75rem; align-items:center; padding:12px 16px; background:var(--panel); position:sticky; top:0; z-index:10; }
+  header h1{ font-size:16px; margin:0 8px 0 0; font-weight:700; white-space:nowrap; }
+  .grow{ flex:1; }
+  input[type="search"]{ width:100%; padding:10px 12px; border-radius:10px; border:1px solid #2a2a35; background:#101016; color:var(--ink); outline:none; }
+  .btn{ background:var(--chip); border:1px solid #2c2c36; color:var(--ink); padding:8px 10px; border-radius:10px; cursor:pointer; }
+  .btn:hover{ border-color:#3a3a49; }
+  .btn.active{ border-color:var(--acc); box-shadow:0 0 0 1px var(--acc) inset; }
+  .wrap{ display:grid; grid-template-columns: 260px 1fr; gap:12px; padding:12px; }
+  aside{ background:var(--panel); border:1px solid #232330; border-radius:14px; padding:12px; max-height:calc(100svh - 80px); overflow:auto; }
+  .sectionTitle{ font-weight:700; font-size:12px; color:var(--muted); letter-spacing:.08em; text-transform:uppercase; margin:10px 0 6px; }
+  .tags{ display:flex; flex-wrap:wrap; gap:8px; }
+  .tag{ display:inline-flex; align-items:center; gap:6px; background:var(--chip); border:1px solid #2c2c36; border-radius:999px; padding:6px 10px; cursor:pointer; }
+  .tag.active{ border-color:var(--acc); box-shadow:0 0 0 1px var(--acc) inset; }
+  .count{ font-size:12px; color:var(--muted); }
+  .grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:10px; }
+  .card{ position:relative; background:#0d0d12; border:1px solid #222231; border-radius:12px; overflow:hidden; }
+  .card img{ width:100%; height:200px; object-fit:cover; display:block; background:#0a0a0f; }
+  .meta{ padding:10px; display:flex; gap:8px; flex-wrap:wrap; }
+  .chip{ font-size:12px; background:#151520; border:1px solid #26263a; border-radius:999px; padding:4px 8px; cursor:pointer; color:#cfd3da; }
+  .chip:hover{ border-color:#35354b; }
+  .title{ padding:10px; color:#cfd3da; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .muted{ color:var(--muted); }
+  .row{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .controls{ display:flex; gap:8px; align-items:center; }
+  .pill{ border-radius:999px; padding:6px 10px; border:1px solid #2c2c36; background:var(--chip); }
+  .status{ color:var(--muted); font-size:12px; }
+  .lightbox{ position:fixed; inset:0; background:rgba(0,0,0,.8); display:none; align-items:center; justify-content:center; padding:24px; z-index:20;}
+  .lightbox.open{ display:flex; }
+  .lb-inner{ display:grid; grid-template-columns: 1fr 320px; gap:12px; width:min(1200px, 96vw); max-height:90svh; }
+  .lb-img{ background:#000; display:flex; align-items:center; justify-content:center; border-radius:12px; overflow:hidden; border:1px solid #2a2a38; }
+  .lb-img img{ max-width:100%; max-height:86svh; object-fit:contain; }
+  .lb-side{ background:var(--panel); border:1px solid #242433; border-radius:12px; padding:12px; overflow:auto; }
+  .empty{ padding:24px; color:var(--muted); text-align:center; }
+  .kbd{ background:#111118; border:1px solid #2b2b38; padding:2px 6px; border-radius:6px; font-size:12px; }
+  .link{ color:#b8c7ff; text-decoration:none; }
+  .link:hover{ text-decoration:underline; }
+  .small{ font-size:12px; }
+  .danger{ color:#ff9f9f; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📸 Static File DAM</h1>
+  <div class="grow"><input id="q" type="search" placeholder="Search title / description / #tags..." /></div>
+  <div class="controls">
+    <button id="andBtn" class="btn active" title="Match ALL selected tags">AND</button>
+    <button id="orBtn" class="btn" title="Match ANY selected tag">OR</button>
+    <button id="cfgBtn" class="btn" title="Configure repository">Repo Settings</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <aside>
+    <div class="sectionTitle">Tags</div>
+    <div id="tagList" class="tags"></div>
+    <div class="sectionTitle">Status</div>
+    <div id="status" class="small status">Idle.</div>
+    <div class="sectionTitle">Hints</div>
+    <div class="small muted">
+      • Store tags in <span class="kbd">XMP dc:subject</span> (preferred) or <span class="kbd">EXIF XPKeywords</span>.<br/>
+      • Hashtags in <span class="kbd">UserComment</span> also count.<br/>
+      • URL supports <span class="kbd">#tag=beach,blue</span> or <span class="kbd">#q=family</span>.
+    </div>
+  </aside>
+
+  <main>
+    <div id="grid" class="grid"></div>
+    <div id="empty" class="empty" style="display:none;">No results. Try clearing filters or switching AND/OR.</div>
+  </main>
+</div>
+
+<div id="lightbox" class="lightbox" tabindex="-1" aria-hidden="true">
+  <div class="lb-inner">
+    <div class="lb-img"><img id="lbImg" alt="Selected photo"/></div>
+    <div class="lb-side">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px;">
+        <strong id="lbTitle">Untitled</strong>
+        <button id="lbClose" class="btn">Close (Esc)</button>
+      </div>
+      <div class="small muted" style="margin-bottom:10px;">
+        <div><span class="muted">Taken:</span> <span id="lbDate">—</span></div>
+        <div><span class="muted">Source:</span> <a id="lbSrc" class="link" target="_blank" rel="noopener">Open raw</a></div>
+      </div>
+      <div class="small" id="lbDesc" style="margin-bottom:10px;"></div>
+      <div class="sectionTitle">Tags</div>
+      <div id="lbTags" class="tags" style="margin-bottom:10px;"></div>
+      <div class="sectionTitle">All Metadata</div>
+      <pre id="lbAll" class="small" style="white-space:pre-wrap;background:#111118;border:1px solid #2b2b38;border-radius:10px;padding:10px;max-height:28svh;overflow:auto;"></pre>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================ CONFIG ============================ */
+/* Edit these to point at your repo. You can also set them in the UI. */
+const CONFIG = {
+  owner: 'your-github-user-or-org',
+  repo: 'your-repo',
+  branch: 'main',
+  rootPath: 'photos', // folder within the repo to scan ('' for repo root)
+  // Token is optional; set via UI to avoid rate limits (stored in localStorage).
+};
+/* ================================================================ */
+
+/* ---------- Light state & helpers ---------- */
+const $ = sel => document.querySelector(sel);
+const grid = $('#grid'), tagList = $('#tagList'), statusEl = $('#status');
+const qInput = $('#q'), andBtn = $('#andBtn'), orBtn = $('#orBtn');
+const lb = $('#lightbox'), lbImg = $('#lbImg'), lbTitle = $('#lbTitle'), lbDate = $('#lbDate'), lbDesc = $('#lbDesc'), lbAll = $('#lbAll'), lbSrc = $('#lbSrc');
+const cfgBtn = $('#cfgBtn'), lbClose = $('#lbClose');
+
+let state = {
+  files: [],           // [{path, name, size, download_url, sha}]
+  meta: new Map(),     // path -> { title, description, date, tags[], raw }
+  tagCounts: new Map(),// tag -> count
+  selectedTags: new Set(),
+  mode: 'AND',
+  query: '',
+  cacheTTLms: 10 * 60 * 1000, // 10 minutes
+};
+
+const CFG_KEY = 'dam_cfg_v1';
+const CACHE_KEY = 'dam_cache_v1';
+
+/* ---------- Startup ---------- */
+loadConfigFromStorage();
+bindUI();
+boot();
+
+function bindUI(){
+  qInput.addEventListener('input', () => { state.query = qInput.value.trim(); render(); syncHash(); });
+  andBtn.addEventListener('click', () => { state.mode='AND'; andBtn.classList.add('active'); orBtn.classList.remove('active'); render(); });
+  orBtn.addEventListener('click', () => { state.mode='OR'; orBtn.classList.add('active'); andBtn.classList.remove('active'); render(); });
+  cfgBtn.addEventListener('click', openConfigDialog);
+  lbClose.addEventListener('click', closeLB);
+  lb.addEventListener('click', (e)=>{ if(e.target===lb) closeLB(); });
+  document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeLB(); });
+  window.addEventListener('hashchange', applyHashFilters);
+}
+
+function boot(){
+  applyHashFilters();
+  const cached = readCache();
+  if(cached){
+    state.files = cached.files || [];
+    state.meta = new Map(cached.meta || []);
+    setStatus(`Loaded ${state.files.length} files from cache; refreshing…`);
+    buildTags();
+    render();
+  }
+  refreshFromGitHub().catch(err=>{
+    console.error(err);
+    setStatus(`Error: ${err.message}`, true);
+  });
+}
+
+/* ---------- Config dialog ---------- */
+function openConfigDialog(){
+  const prior = loadConfigFromStorage() || CONFIG;
+  const token = localStorage.getItem('dam_token_v1') || '';
+  const v = prompt(
+    'Set repo config as owner,repo,branch,rootPath[,token]\n' +
+    `Current: ${prior.owner},${prior.repo},${prior.branch},${prior.rootPath}${token?',[token set]':''}\n\n` +
+    'Example: myuser,myrepo,main,photos,ghp_abc123…'
+  );
+  if(!v) return;
+  const parts = v.split(',').map(s=>s.trim());
+  if(parts.length < 4){ alert('Need at least owner,repo,branch,rootPath'); return; }
+  const [owner, repo, branch, rootPath, maybeToken] = parts;
+  const cfg = {owner, repo, branch, rootPath};
+  Object.assign(CONFIG, cfg);
+  localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+  if(maybeToken) localStorage.setItem('dam_token_v1', maybeToken);
+  // Clear cache so we reindex from the new repo
+  localStorage.removeItem(CACHE_KEY);
+  location.reload();
+}
+
+function loadConfigFromStorage(){
+  try{
+    const raw = localStorage.getItem(CFG_KEY);
+    if(raw){
+      const cfg = JSON.parse(raw);
+      Object.assign(CONFIG, cfg);
+      return cfg;
+    }
+  }catch{}
+  return null;
+}
+
+/* ---------- GitHub fetching ---------- */
+async function refreshFromGitHub(){
+  const all = await listAllImagesFromRepo(CONFIG.owner, CONFIG.repo, CONFIG.branch, CONFIG.rootPath);
+  state.files = all;
+  setStatus(`Found ${all.length} image(s). Reading metadata…`);
+  // Parse metadata with limited concurrency
+  await mapLimit(all, 6, async (file, idx) => {
+    setStatus(`Reading metadata ${idx+1}/${all.length}…`);
+    const meta = await readPhotoMeta(file.download_url, file.path);
+    state.meta.set(file.path, meta);
+  });
+  buildTags();
+  render();
+  writeCache();
+  setStatus(`Done. Indexed ${all.length} image(s), ${state.tagCounts.size} unique tag(s).`);
+}
+
+async function listAllImagesFromRepo(owner, repo, branch, rootPath){
+  const token = localStorage.getItem('dam_token_v1') || undefined;
+  const acc = [];
+  async function walk(dir){
+    const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(dir)}?ref=${encodeURIComponent(branch)}`;
+    const res = await fetch(url, { headers: token ? {Authorization: `Bearer ${token}`} : {} });
+    if(res.status===404){ throw new Error(`Path not found: ${dir}`); }
+    if(res.status===403){ throw new Error(`GitHub API rate-limited (403). Add a token via Repo Settings.`); }
+    if(!res.ok) throw new Error(`GitHub API error ${res.status}`);
+    const json = await res.json();
+    for(const item of json){
+      if(item.type==='dir'){
+        await walk(item.path);
+      }else{
+        const name = item.name.toLowerCase();
+        if(name.endsWith('.jpg')||name.endsWith('.jpeg')){ // v1: JPEG only
+          acc.push({
+            path: item.path,
+            name: item.name,
+            size: item.size,
+            sha: item.sha,
+            download_url: item.download_url, // raw URL
+          });
+        }
+      }
+    }
+  }
+  await walk(rootPath || '');
+  return acc;
+}
+
+/* ---------- Metadata parsing ---------- */
+/* We try small range first (256KB) to read JPEG APP1/APP13 segments */
+async function readPhotoMeta(rawUrl, key){
+  // Range read
+  let buf;
+  try{
+    const r = await fetch(rawUrl, { headers: { 'Range': 'bytes=0-262143' }});
+    if(r.status===206 || r.status===200){
+      buf = await r.arrayBuffer();
+    }else{
+      // fallback full fetch
+      const f = await fetch(rawUrl);
+      buf = await f.arrayBuffer();
+    }
+  }catch{
+    // last resort
+    const f = await fetch(rawUrl);
+    buf = await f.arrayBuffer();
+  }
+  const meta = extractMetadataFromJPEG(buf);
+  // Friendly normalization
+  const tags = new Set();
+  for(const t of meta.tags || []) if(t && t.trim()) tags.add(normalizeTag(t));
+  // Hash tags in comment/desc
+  const hashTags = collectHashtags([meta.description, meta.userComment].filter(Boolean).join(' '));
+  hashTags.forEach(t=>tags.add(t));
+  const title = meta.title || meta.imageDescription || '';
+  const description = meta.description || meta.imageDescription || '';
+  const when = meta.dateTimeOriginal || meta.createDate || '';
+  return {
+    title: title || '(Untitled)',
+    description,
+    date: when,
+    tags: [...tags].sort(),
+    raw: meta,
+    url: rawUrl,
+    key
+  };
+}
+
+/* ---------- JPEG segment + EXIF/XMP/IPTC parser (minimal) ---------- */
+/* This is a compact, self-contained reader for common fields we need. */
+function extractMetadataFromJPEG(buffer){
+  const dv = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+  let off = 0;
+  function readUint16(o){ return dv.getUint16(o, false); } // big-endian for JPEG markers
+  function readStr(arr, start, len){ return new TextDecoder().decode(arr.subarray(start, start+len)); }
+
+  // verify SOI
+  if(readUint16(0)!==0xFFD8) return {};
+  off = 2;
+  let exifBlocks=[], xmpBlocks=[], iptcBlocks=[];
+  while(off + 4 <= bytes.length){
+    if(bytes[off]!==0xFF){ break; }
+    const marker = bytes[off+1];
+    off += 2;
+    if(marker===0xDA /*SOS*/ || marker===0xD9 /*EOI*/){ break; }
+    const size = readUint16(off); off += 2;
+    const start = off, end = off + size - 2;
+    if(marker===0xE1 /*APP1*/){
+      // EXIF or XMP
+      if(end-start >= 6){
+        const head = readStr(bytes, start, Math.min(64, end-start));
+        if(head.startsWith('Exif\0\0')){
+          exifBlocks.push(bytes.slice(start+6, end));
+        }else if(head.startsWith('http://ns.adobe.com/xap/1.0/\0')){
+          xmpBlocks.push(bytes.slice(start+29, end));
+        }else{
+          // Some XMP blocks omit the namespace preamble; attempt naive XML detection
+          const maybe = readStr(bytes, start, Math.min(200, end-start));
+          if(maybe.includes('<x:xmpmeta') || maybe.includes('<rdf:RDF')) xmpBlocks.push(bytes.slice(start, end));
+        }
+      }
+    }else if(marker===0xED /*APP13 - IPTC via Photoshop IRB*/){
+      iptcBlocks.push(bytes.slice(start, end));
+    }
+    off = end;
+  }
+
+  const out = {};
+  // EXIF (TIFF) parse (limited)
+  for(const blk of exifBlocks){
+    try{
+      Object.assign(out, parseEXIF_TIFF(new DataView(blk.buffer, blk.byteOffset, blk.byteLength)));
+    }catch(e){ /* ignore */ }
+  }
+  // XMP parse
+  for(const blk of xmpBlocks){
+    try{
+      const xml = new TextDecoder().decode(blk);
+      Object.assign(out, parseXMP(xml));
+    }catch(e){ /* ignore */ }
+  }
+  // IPTC parse
+  for(const blk of iptcBlocks){
+    try{
+      const iptc = parseIPTC(blk);
+      if(iptc.keywords && iptc.keywords.length){
+        out.tags = (out.tags||[]).concat(iptc.keywords);
+      }
+      Object.assign(out, iptc.other || {});
+    }catch(e){ /* ignore */ }
+  }
+  // Normalize tags from XPKeywords (EXIF)
+  if(out.xpKeywords && out.xpKeywords.length){
+    const decoded = decodeXPKeywords(out.xpKeywords).split(';').map(s=>s.trim()).filter(Boolean);
+    out.tags = (out.tags||[]).concat(decoded);
+  }
+  // Prefer XMP title/description
+  if(out.xmpTitle) out.title = out.xmpTitle;
+  if(out.xmpDescription) out.description = out.xmpDescription;
+  return out;
+}
+
+function parseEXIF_TIFF(dv){
+  // TIFF header: byte order + 0x002A + IFD0 offset
+  const endian = (dv.getUint16(0, false)===0x4D4D) ? 'BE' : 'LE';
+  const le = endian==='LE';
+  const tag = (o)=>dv.getUint16(o, le);
+  const u32 = (o)=>dv.getUint32(o, le);
+  const u16 = (o)=>dv.getUint16(o, le);
+  const get = (o, t, c, valoff) => {
+    const cnt = c;
+    const type = t;
+    const compSize = ({1:1,2:1,3:2,4:4,5:8,7:1}[type] || 1) * cnt;
+    const off = compSize>4 ? u32(valoff) : valoff;
+    const realOff = compSize>4 ? off : valoff;
+    if(type===2){ // ASCII
+      let s='';
+      for(let i=0;i<cnt;i++){ const b=dv.getUint8(realOff+i); if(b===0) break; s+=String.fromCharCode(b); }
+      return s;
+    } else if(type===3){ // SHORT
+      if(cnt===1) return u16(realOff);
+      const arr=[]; for(let i=0;i<cnt;i++) arr.push(u16(off + i*2)); return arr;
+    } else if(type===4){ // LONG
+      if(cnt===1) return u32(realOff);
+      const arr=[]; for(let i=0;i<cnt;i++) arr.push(u32(off + i*4)); return arr;
+    } else if(type===7){ // UNDEFINED (e.g., XPKeywords as bytes)
+      const arr=[]; for(let i=0;i<cnt;i++) arr.push(dv.getUint8((compSize>4?off:realOff)+i)); return new Uint8Array(arr);
+    } else { // fallback read raw bytes
+      const arr=[]; for(let i=0;i<cnt;i++) arr.push(dv.getUint8((compSize>4?off:realOff)+i)); return arr;
+    }
+  };
+  const IFD = (offset) => {
+    const n = u16(offset); const out=[]; let base = offset+2;
+    for(let i=0;i<n;i++){
+      const entry = base + i*12;
+      const tg = tag(entry), type = u16(entry+2), cnt = u32(entry+4), valoff = entry+8;
+      out.push([tg,type,cnt,valoff]);
+    }
+    const next = u32(offset+2 + n*12);
+    return { entries: out, next };
+  };
+  const res = {};
+  const ifd0off = u32(4);
+  const ifd0 = IFD(ifd0off);
+
+  let exifIFDoff = null;
+  for(const [tg,type,cnt,valoff] of ifd0.entries){
+    if(tg===0x010E) res.imageDescription = get(valoff,type,cnt,valoff); // ImageDescription
+    if(tg===0x9C9B) res.xpTitle = get(valoff,type,cnt,valoff);         // XPTitle (bytes)
+    if(tg===0x9C9C) res.xpComment = get(valoff,type,cnt,valoff);       // XPComment (bytes)
+    if(tg===0x9C9E) res.xpKeywords = get(valoff,type,cnt,valoff);      // XPKeywords (bytes)
+    if(tg===0x8769) exifIFDoff = get(valoff,type,cnt,valoff);          // ExifIFD offset
+  }
+  if(exifIFDoff){
+    const ex = IFD(exifIFDoff);
+    for(const [tg,type,cnt,valoff] of ex.entries){
+      if(tg===0x9003) res.dateTimeOriginal = get(valoff,type,cnt,valoff);
+      if(tg===0x9004) res.createDate = get(valoff,type,cnt,valoff);
+      if(tg===0x9286){ // UserComment, first 8 bytes are coding ("ASCII\0\0\0", "UNICODE\0")
+        const raw = get(valoff,type,cnt,valoff);
+        if(raw instanceof Uint8Array){
+          const head = new TextDecoder().decode(raw.slice(0,8));
+          if(head.startsWith('ASCII')) res.userComment = new TextDecoder().decode(raw.slice(8)).replace(/\0+$/,'');
+          else if(head.startsWith('UNICODE')) res.userComment = new TextDecoder('utf-16be').decode(raw.slice(8)).replace(/\0+$/,'');
+          else res.userComment = new TextDecoder().decode(raw).replace(/\0+$/,'');
+        }
+      }
+    }
+  }
+  // Decode XP fields (UTF-16LE null-terminated)
+  if(res.xpTitle instanceof Uint8Array) res.xmpTitle = new TextDecoder('utf-16le').decode(res.xpTitle).replace(/\0+$/,'');
+  if(res.xpComment instanceof Uint8Array) res.description = new TextDecoder('utf-16le').decode(res.xpComment).replace(/\0+$/,'');
+  return res;
+}
+
+function decodeXPKeywords(bytes){
+  if(!(bytes instanceof Uint8Array)) return '';
+  return new TextDecoder('utf-16le').decode(bytes).replace(/\0+$/,'');
+}
+
+function parseXMP(xml){
+  const out = {};
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xml, 'application/xml');
+  // handle dc:subject
+  const li = doc.getElementsByTagNameNS('*','subject')[0] || doc.querySelector('dc\\:subject, subject');
+  if(li){
+    const bag = li.getElementsByTagNameNS('*','Bag')[0] || li.querySelector('rdf\\:Bag, Bag');
+    if(bag){
+      const tags=[];
+      bag.querySelectorAll('rdf\\:li, li').forEach(n=>{ const t=(n.textContent||'').trim(); if(t) tags.push(t); });
+      if(tags.length) out.tags = (out.tags||[]).concat(tags);
+    }
+  }
+  // title
+  const titleAlt = doc.querySelector('dc\\:title, title');
+  if(titleAlt){
+    const t = titleAlt.querySelector('rdf\\:Alt > rdf\\:li, Alt > li, li') || titleAlt.firstElementChild || titleAlt;
+    out.xmpTitle = (t && t.textContent || '').trim();
+  }
+  // description
+  const descAlt = doc.querySelector('dc\\:description, description');
+  if(descAlt){
+    const d = descAlt.querySelector('rdf\\:Alt > rdf\\:li, Alt > li, li') || descAlt.firstElementChild || descAlt;
+    out.xmpDescription = (d && d.textContent || '').trim();
+  }
+  return out;
+}
+
+function parseIPTC(block){
+  // Photoshop IRB: "8BIM" blocks; IPTC is Resource ID 0x0404
+  const bytes = block;
+  let p = 0;
+  function readStr(len){ const s = new TextDecoder().decode(bytes.subarray(p, p+len)); p+=len; return s; }
+  function readU16BE(){ const v=(bytes[p]<<8)|bytes[p+1]; p+=2; return v; }
+  const keywords = [];
+  while(p + 12 <= bytes.length){
+    if(bytes[p]!==0x38 || bytes[p+1]!==0x42 || bytes[p+2]!==0x49 || bytes[p+3]!==0x4D) break; // "8BIM"
+    p+=4;
+    const rid = readU16BE();
+    // Pascal string name (padded to even)
+    const nameLen = bytes[p]; p++;
+    p += nameLen + ((1 + nameLen) % 2 === 1 ? 1 : 0);
+    let size = (bytes[p]<<24)|(bytes[p+1]<<16)|(bytes[p+2]<<8)|bytes[p+3]; p+=4;
+    const dataStart = p;
+    if(rid===0x0404){
+      // IPTC data sets
+      let q = p;
+      while(q + 5 <= p + size){
+        if(bytes[q]!==0x1C) break;
+        const record = bytes[q+1]; const dataset = bytes[q+2];
+        let len = (bytes[q+3]<<8)|bytes[q+4]; q+=5;
+        if(len & 0x8000){ // extended
+          const n = len & 0x7FFF;
+          let L = 0; for(let i=0;i<n;i++){ L=(L<<8)|bytes[q+i]; } q += n; len = L;
+        }
+        const data = bytes.subarray(q, q+len); q += len;
+        if(record===2 && dataset===25){ // Keywords
+          const k = new TextDecoder().decode(data).trim();
+          if(k) keywords.push(k);
+        }
+      }
+    }
+    p = dataStart + size;
+    if(p%2===1) p++; // pad to even
+  }
+  return { keywords, other:{} };
+}
+
+function collectHashtags(text){
+  const set = new Set();
+  if(!text) return set;
+  const rx = /(^|\s)#([a-zA-Z0-9_\-]+)/g;
+  let m; while((m = rx.exec(text))){ set.add(m[2]); }
+  return set;
+}
+
+function normalizeTag(t){ return t.replace(/^#/, '').trim().toLowerCase(); }
+
+/* ---------- Rendering & filtering ---------- */
+function buildTags(){
+  const counts = new Map();
+  for(const [path, meta] of state.meta){
+    for(const t of (meta.tags||[])){
+      counts.set(t, (counts.get(t)||0)+1);
+    }
+  }
+  // stable order: by frequency desc then alpha
+  state.tagCounts = new Map([...counts.entries()].sort((a,b)=> b[1]-a[1] || a[0].localeCompare(b[0])));
+  renderTagList();
+}
+
+function renderTagList(){
+  tagList.innerHTML = '';
+  for(const [tag, count] of state.tagCounts){
+    const el = document.createElement('div');
+    el.className = 'tag' + (state.selectedTags.has(tag) ? ' active' : '');
+    el.innerHTML = `<span>#${escapeHTML(tag)}</span><span class="count">${count}</span>`;
+    el.addEventListener('click', () => {
+      if(state.selectedTags.has(tag)) state.selectedTags.delete(tag);
+      else state.selectedTags.add(tag);
+      render();
+      syncHash();
+    });
+    tagList.appendChild(el);
+  }
+}
+
+function fileMatches(meta){
+  const q = state.query.toLowerCase();
+  const tagSet = new Set((meta.tags||[]).map(String));
+  // Text query: title/desc/tags
+  if(q){
+    const fields = [meta.title||'', meta.description||'', (meta.tags||[]).join(' ')];
+    const hay = fields.join(' ').toLowerCase();
+    if(!hay.includes(q)) return false;
+  }
+  // Tag mode
+  if(state.selectedTags.size){
+    if(state.mode==='AND'){
+      for(const t of state.selectedTags){ if(!tagSet.has(t)) return false; }
+      return true;
+    }else{
+      for(const t of state.selectedTags){ if(tagSet.has(t)) return true; }
+      return false;
+    }
+  }
+  return true;
+}
+
+function render(){
+  const items = [];
+  for(const f of state.files){
+    const m = state.meta.get(f.path);
+    if(!m) continue;
+    if(fileMatches(m)) items.push({file:f, meta:m});
+  }
+  grid.innerHTML = '';
+  $('#empty').style.display = items.length ? 'none' : 'block';
+  for(const {file, meta} of items){
+    const card = document.createElement('div');
+    card.className = 'card';
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.alt = meta.title || file.name;
+    img.src = file.download_url; // raw URL
+    img.addEventListener('click', () => openLB(meta));
+    const title = document.createElement('div');
+    title.className = 'title';
+    title.textContent = meta.title || file.name;
+    const metaWrap = document.createElement('div');
+    metaWrap.className = 'meta';
+    for(const t of meta.tags||[]){
+      const chip = document.createElement('div');
+      chip.className='chip';
+      chip.textContent = '#'+t;
+      chip.addEventListener('click', (e)=>{ e.stopPropagation(); toggleTag(t); });
+      metaWrap.appendChild(chip);
+    }
+    card.appendChild(img);
+    card.appendChild(title);
+    card.appendChild(metaWrap);
+    grid.appendChild(card);
+  }
+}
+
+function toggleTag(t){
+  if(state.selectedTags.has(t)) state.selectedTags.delete(t);
+  else state.selectedTags.add(t);
+  renderTagList();
+  render();
+  syncHash();
+}
+
+/* ---------- Lightbox ---------- */
+function openLB(meta){
+  lbImg.src = meta.url;
+  lbTitle.textContent = meta.title || '(Untitled)';
+  lbDate.textContent = meta.date || '—';
+  lbDesc.textContent = meta.description || '';
+  lbSrc.href = meta.url;
+  lbAll.textContent = JSON.stringify(meta.raw, null, 2);
+  lb.classList.add('open');
+  lb.focus();
+}
+function closeLB(){ lb.classList.remove('open'); }
+
+/* ---------- Status & cache ---------- */
+function setStatus(msg, isErr=false){
+  statusEl.textContent = msg;
+  statusEl.classList.toggle('danger', !!isErr);
+}
+
+function writeCache(){
+  try{
+    const payload = {
+      t: Date.now(),
+      cfg: CONFIG,
+      files: state.files,
+      meta: [...state.meta.entries()].map(([k,v])=>[k,{title:v.title,description:v.description,date:v.date,tags:v.tags,raw:v.raw,url:v.url,key:v.key}]),
+    };
+    localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
+  }catch{}
+}
+
+function readCache(){
+  try{
+    const raw = localStorage.getItem(CACHE_KEY);
+    if(!raw) return null;
+    const data = JSON.parse(raw);
+    if(Date.now() - data.t > state.cacheTTLms) return null;
+    return data;
+  }catch{ return null; }
+}
+
+/* ---------- Hash sync (q & tags) ---------- */
+function syncHash(){
+  const tags = [...state.selectedTags].join(',');
+  const parts = [];
+  if(tags) parts.push(`tag=${encodeURIComponent(tags)}`);
+  if(state.query) parts.push(`q=${encodeURIComponent(state.query)}`);
+  const hash = parts.join('&');
+  if(location.hash.slice(1) !== hash){
+    history.replaceState(null, '', '#'+hash);
+  }
+}
+
+function applyHashFilters(){
+  const h = new URLSearchParams(location.hash.slice(1));
+  const tags = (h.get('tag') || '').split(',').map(s=>s.trim()).filter(Boolean);
+  state.selectedTags = new Set(tags);
+  qInput.value = h.get('q') || '';
+  state.query = qInput.value;
+  renderTagList();
+  render();
+}
+
+/* ---------- Utils ---------- */
+function escapeHTML(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function mapLimit(arr, limit, worker){
+  const ret = []; let i=0; const running = new Set();
+  async function next(){
+    if(i>=arr.length) return;
+    const cur = i++; const p = (async()=> worker(arr[cur], cur))().then(v=> ret[cur]=v).finally(()=>running.delete(p));
+    running.add(p);
+    if(running.size >= limit) await Promise.race(running);
+    return next();
+  }
+  const starters = Math.min(limit, arr.length);
+  for(let k=0;k<starters;k++) await next();
+  while(running.size) await Promise.race(running);
+  return ret;
+}
+</script>
+</body>
+</html>
