@@ -35,6 +35,26 @@
             margin-bottom: 20px;
         }
 
+        .setup-notice {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            color: #856404;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .setup-notice h3 {
+            margin-bottom: 10px;
+        }
+
+        .setup-notice code {
+            background: rgba(0,0,0,0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+
         .controls {
             display: flex;
             gap: 20px;
@@ -374,6 +394,25 @@
             padding: 40px;
             color: #666;
         }
+
+        .scan-button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .scan-button:hover {
+            background: #0056b3;
+        }
+
+        .scan-button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -384,28 +423,36 @@
                 <div class="search-box">
                     <input type="text" id="searchInput" placeholder="Search by filename or tags...">
                 </div>
+                <button class="scan-button" id="scanButton">Scan Repository</button>
                 <button class="clear-filters" id="clearFilters" style="display: none;">Clear Filters</button>
             </div>
         </header>
 
-        <div class="stats" id="stats">
+        <div class="setup-notice" id="setupNotice">
+            <h3>Setup Required</h3>
+            <p>To scan your repository, click the "Scan Repository" button above.</p>
+            <p>The scanner will use GitHub API to discover all photos in your <code>/photos</code> folder.</p>
+            <p><strong>Note:</strong> For private repos, you may need to provide a GitHub token.</p>
+        </div>
+
+        <div class="stats" id="stats" style="display: none;">
             <div class="stat-item">Total Photos: <strong id="totalPhotos">0</strong></div>
             <div class="stat-item">Visible: <strong id="visiblePhotos">0</strong></div>
             <div class="stat-item">Active Tags: <strong id="activeTags">0</strong></div>
         </div>
 
-        <div class="folder-nav" id="folderNav">
+        <div class="folder-nav" id="folderNav" style="display: none;">
             <div class="folder-path" id="folderPath"></div>
         </div>
 
         <div class="subfolders" id="subfolders"></div>
 
-        <div class="tag-filter" id="tagFilter">
+        <div class="tag-filter" id="tagFilter" style="display: none;">
             <span class="empty">No tags available. Tags will appear here once photos are loaded.</span>
         </div>
 
-        <div class="loading-indicator" id="loadingIndicator">
-            Loading photo index...
+        <div class="loading-indicator" id="loadingIndicator" style="display: none;">
+            Scanning repository for photos...
         </div>
 
         <div class="photo-grid" id="photoGrid"></div>
@@ -429,15 +476,28 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/exifreader@4.13.0/dist/exif-reader.min.js"></script>
     <script>
         // Configuration
         const CONFIG = {
-            githubRepo: window.location.hostname.includes('github.io') 
-                ? window.location.pathname.split('/')[1] 
-                : '',
+            get owner() {
+                // Extract from GitHub Pages URL: username.github.io/repo-name
+                const hostname = window.location.hostname;
+                if (hostname.includes('github.io')) {
+                    return hostname.split('.')[0];
+                }
+                // For local testing
+                return prompt('Enter GitHub username:');
+            },
+            get repo() {
+                // Extract repo name from path
+                const path = window.location.pathname;
+                if (path && path !== '/') {
+                    return path.split('/')[1] || prompt('Enter repository name:');
+                }
+                return prompt('Enter repository name:');
+            },
             photosPath: 'photos',
-            indexFile: 'photo-index.json'
+            githubToken: null // Can be set for private repos
         };
 
         // State management
@@ -448,93 +508,193 @@
             selectedTags: new Set(),
             currentPath: '',
             searchTerm: '',
-            folders: {}
+            folders: {},
+            isScanning: false
         };
 
         // Initialize app
         async function init() {
+            setupEventListeners();
+            
+            // Check if we have cached data in localStorage
+            const cachedData = localStorage.getItem('photoDAM_cache');
+            if (cachedData) {
+                try {
+                    const data = JSON.parse(cachedData);
+                    state.photos = data.photos || [];
+                    processPhotos();
+                    showMainUI();
+                    renderFolderNav();
+                    renderPhotos();
+                    updateStats();
+                } catch (error) {
+                    console.error('Error loading cached data:', error);
+                }
+            }
+        }
+
+        // Scan GitHub repository for photos
+        async function scanRepository() {
+            const scanButton = document.getElementById('scanButton');
+            const loadingIndicator = document.getElementById('loadingIndicator');
+            const setupNotice = document.getElementById('setupNotice');
+            
+            if (state.isScanning) return;
+            
+            state.isScanning = true;
+            scanButton.disabled = true;
+            scanButton.textContent = 'Scanning...';
+            loadingIndicator.style.display = 'block';
+            setupNotice.style.display = 'none';
+            
             try {
-                await loadPhotoIndex();
-                setupEventListeners();
+                const photos = await fetchPhotosFromGitHub();
+                state.photos = photos;
+                processPhotos();
+                
+                // Cache the results
+                localStorage.setItem('photoDAM_cache', JSON.stringify({
+                    photos: state.photos,
+                    timestamp: Date.now()
+                }));
+                
+                showMainUI();
                 renderFolderNav();
                 renderPhotos();
                 updateStats();
-            } catch (error) {
-                console.error('Initialization error:', error);
-                showError('Failed to initialize the photo manager. Please check the console for details.');
-            }
-        }
-
-        // Load photo index from JSON file
-        async function loadPhotoIndex() {
-            const loadingIndicator = document.getElementById('loadingIndicator');
-            
-            try {
-                // Try to load a pre-generated index file first
-                const indexUrl = `${CONFIG.indexFile}`;
-                const response = await fetch(indexUrl);
                 
-                if (response.ok) {
-                    const data = await response.json();
-                    state.photos = data.photos || [];
-                    processPhotos();
-                    loadingIndicator.style.display = 'none';
-                } else {
-                    // Fallback: scan directory structure
-                    await scanPhotoDirectory();
-                    loadingIndicator.style.display = 'none';
-                }
-            } catch (error) {
-                console.error('Error loading photo index:', error);
-                loadingIndicator.innerHTML = 'Unable to load photo index. Attempting directory scan...';
-                await scanPhotoDirectory();
                 loadingIndicator.style.display = 'none';
+                scanButton.textContent = 'Rescan Repository';
+                
+            } catch (error) {
+                console.error('Error scanning repository:', error);
+                showError(`Failed to scan repository: ${error.message}`);
+                loadingIndicator.style.display = 'none';
+                scanButton.textContent = 'Retry Scan';
+            } finally {
+                state.isScanning = false;
+                scanButton.disabled = false;
             }
         }
 
-        // Fallback: Scan directory for photos
-        async function scanPhotoDirectory() {
-            // This is a simplified version - in production, you'd need a server-side script
-            // or GitHub API to list files. For now, we'll use a predefined structure
-            const samplePhotos = [
-                { path: 'photos/nature/sunset.jpg', name: 'sunset.jpg', folder: 'nature' },
-                { path: 'photos/nature/mountain.jpg', name: 'mountain.jpg', folder: 'nature' },
-                { path: 'photos/urban/city.jpg', name: 'city.jpg', folder: 'urban' },
-                { path: 'photos/people/portrait.jpg', name: 'portrait.jpg', folder: 'people' }
-            ];
+        // Fetch photos from GitHub using API
+        async function fetchPhotosFromGitHub() {
+            const owner = CONFIG.owner;
+            const repo = CONFIG.repo;
+            const path = CONFIG.photosPath;
             
-            state.photos = samplePhotos;
-            processPhotos();
+            if (!owner || !repo) {
+                throw new Error('GitHub repository information not configured');
+            }
+            
+            const photos = [];
+            
+            // Function to recursively fetch directory contents
+            async function fetchDirectory(dirPath) {
+                const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${dirPath}`;
+                
+                const headers = {
+                    'Accept': 'application/vnd.github.v3+json'
+                };
+                
+                if (CONFIG.githubToken) {
+                    headers['Authorization'] = `token ${CONFIG.githubToken}`;
+                }
+                
+                try {
+                    const response = await fetch(apiUrl, { headers });
+                    
+                    if (!response.ok) {
+                        if (response.status === 404) {
+                            throw new Error(`Photos folder not found at /${path}. Make sure the folder exists in your repository.`);
+                        } else if (response.status === 403) {
+                            throw new Error('API rate limit exceeded or authentication required. For private repos, set CONFIG.githubToken.');
+                        }
+                        throw new Error(`GitHub API error: ${response.status}`);
+                    }
+                    
+                    const items = await response.json();
+                    
+                    for (const item of items) {
+                        if (item.type === 'file') {
+                            // Check if it's an image file
+                            const ext = item.name.split('.').pop().toLowerCase();
+                            if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)) {
+                                const relativePath = item.path;
+                                const folderPath = relativePath.substring(0, relativePath.lastIndexOf('/'));
+                                const folder = folderPath.replace(CONFIG.photosPath + '/', '').replace(CONFIG.photosPath, '');
+                                
+                                photos.push({
+                                    path: item.download_url,
+                                    name: item.name,
+                                    size: item.size,
+                                    sha: item.sha,
+                                    relativePath: relativePath,
+                                    folder: folder || 'root',
+                                    tags: [] // Will be populated from EXIF
+                                });
+                            }
+                        } else if (item.type === 'dir') {
+                            // Recursively fetch subdirectory
+                            await fetchDirectory(item.path);
+                        }
+                    }
+                } catch (error) {
+                    console.error(`Error fetching directory ${dirPath}:`, error);
+                    throw error;
+                }
+            }
+            
+            await fetchDirectory(path);
+            
+            console.log(`Found ${photos.length} photos in repository`);
+            return photos;
         }
 
-        // Process photos and extract metadata
+        // Process photos and build folder structure
         function processPhotos() {
             state.folders = {};
             
             state.photos.forEach(photo => {
-                // Parse folder structure
-                const pathParts = photo.path.split('/');
-                let currentLevel = state.folders;
+                // Build folder hierarchy
+                const parts = photo.folder.split('/').filter(p => p && p !== 'root');
                 
-                for (let i = 0; i < pathParts.length - 1; i++) {
-                    const folder = pathParts[i];
-                    if (!currentLevel[folder]) {
-                        currentLevel[folder] = {
-                            name: folder,
-                            path: pathParts.slice(0, i + 1).join('/'),
+                if (parts.length === 0) {
+                    // Root level photo
+                    if (!state.folders['_root']) {
+                        state.folders['_root'] = {
+                            name: 'Root',
+                            path: '',
                             subfolders: {},
                             photos: []
                         };
                     }
+                    state.folders['_root'].photos.push(photo);
+                } else {
+                    let currentLevel = state.folders;
+                    let currentPath = '';
                     
-                    if (i === pathParts.length - 2) {
-                        currentLevel[folder].photos.push(photo);
-                    }
-                    
-                    currentLevel = currentLevel[folder].subfolders;
+                    parts.forEach((part, index) => {
+                        currentPath = currentPath ? `${currentPath}/${part}` : part;
+                        
+                        if (!currentLevel[part]) {
+                            currentLevel[part] = {
+                                name: part,
+                                path: currentPath,
+                                subfolders: {},
+                                photos: []
+                            };
+                        }
+                        
+                        if (index === parts.length - 1) {
+                            currentLevel[part].photos.push(photo);
+                        }
+                        
+                        currentLevel = currentLevel[part].subfolders;
+                    });
                 }
                 
-                // Initialize tags (will be populated when EXIF is read)
+                // Initialize tags
                 photo.tags = photo.tags || [];
                 photo.tags.forEach(tag => state.allTags.add(tag));
             });
@@ -542,44 +702,24 @@
             state.filteredPhotos = [...state.photos];
         }
 
-        // Load EXIF data for a photo
+        // Load EXIF data for a photo (simplified - CORS issues with external URLs)
         async function loadExifData(photo) {
-            try {
-                const response = await fetch(photo.path);
-                const arrayBuffer = await response.arrayBuffer();
-                const tags = ExifReader.load(arrayBuffer);
-                
-                // Extract relevant EXIF data
-                const exifTags = [];
-                
-                // Check for keywords/tags in EXIF
-                if (tags.Keywords) {
-                    const keywords = tags.Keywords.description.split(',').map(k => k.trim());
-                    exifTags.push(...keywords);
-                }
-                
-                if (tags.Subject) {
-                    const subjects = tags.Subject.description.split(',').map(s => s.trim());
-                    exifTags.push(...subjects);
-                }
-                
-                // Store additional metadata
-                photo.exif = {
-                    camera: tags.Make ? `${tags.Make.description} ${tags.Model?.description || ''}` : '',
-                    date: tags.DateTime?.description || '',
-                    iso: tags.ISOSpeedRatings?.description || '',
-                    aperture: tags.FNumber?.description || '',
-                    shutter: tags.ExposureTime?.description || ''
-                };
-                
-                photo.tags = [...new Set([...photo.tags, ...exifTags])];
-                photo.tags.forEach(tag => state.allTags.add(tag));
-                
-                return photo;
-            } catch (error) {
-                console.error(`Error loading EXIF for ${photo.name}:`, error);
-                return photo;
-            }
+            // Note: EXIF reading from external URLs has CORS restrictions
+            // This would work only if the images are served from the same domain
+            // For now, we'll skip EXIF reading from GitHub URLs
+            
+            // You could implement a server-side proxy or use GitHub Actions
+            // to pre-process images and store EXIF data
+            
+            return photo;
+        }
+
+        // Show main UI elements
+        function showMainUI() {
+            document.getElementById('setupNotice').style.display = 'none';
+            document.getElementById('stats').style.display = 'flex';
+            document.getElementById('folderNav').style.display = 'flex';
+            document.getElementById('tagFilter').style.display = 'flex';
         }
 
         // Render photos
@@ -599,15 +739,6 @@
             state.filteredPhotos.forEach(photo => {
                 const item = createPhotoElement(photo);
                 grid.appendChild(item);
-            });
-            
-            // Load EXIF data asynchronously
-            state.filteredPhotos.forEach(async photo => {
-                if (!photo.exifLoaded) {
-                    await loadExifData(photo);
-                    photo.exifLoaded = true;
-                    renderTags();
-                }
             });
         }
 
@@ -689,7 +820,7 @@
             const tagFilter = document.getElementById('tagFilter');
             
             if (state.allTags.size === 0) {
-                tagFilter.innerHTML = '<span class="empty">No tags available</span>';
+                tagFilter.innerHTML = '<span class="empty">No tags available. EXIF tags will appear here when available.</span>';
                 return;
             }
             
@@ -752,16 +883,30 @@
             
             if (currentFolder && Object.keys(currentFolder).length > 0) {
                 Object.values(currentFolder).forEach(folder => {
-                    const folderEl = document.createElement('div');
-                    folderEl.className = 'subfolder';
-                    folderEl.innerHTML = `
-                        <span class="subfolder-icon">📁</span>
-                        <span>${folder.name} (${folder.photos.length})</span>
-                    `;
-                    folderEl.onclick = () => navigateToFolder(folder.path);
-                    subfolders.appendChild(folderEl);
+                    if (folder.name !== '_root') {
+                        const folderEl = document.createElement('div');
+                        folderEl.className = 'subfolder';
+                        const photoCount = countPhotosInFolder(folder);
+                        folderEl.innerHTML = `
+                            <span class="subfolder-icon">📁</span>
+                            <span>${folder.name} (${photoCount})</span>
+                        `;
+                        folderEl.onclick = () => navigateToFolder(folder.path);
+                        subfolders.appendChild(folderEl);
+                    }
                 });
             }
+        }
+
+        // Count photos in folder and subfolders
+        function countPhotosInFolder(folder) {
+            let count = folder.photos.length;
+            
+            Object.values(folder.subfolders).forEach(subfolder => {
+                count += countPhotosInFolder(subfolder);
+            });
+            
+            return count;
         }
 
         // Get current folder object
@@ -807,7 +952,7 @@
             state.filteredPhotos = state.photos.filter(photo => {
                 // Folder filter
                 if (state.currentPath) {
-                    if (!photo.path.startsWith(state.currentPath + '/')) {
+                    if (!photo.folder.startsWith(state.currentPath)) {
                         return false;
                     }
                 }
@@ -826,8 +971,9 @@
                     const matchesName = photo.name.toLowerCase().includes(term);
                     const matchesTags = photo.tags && 
                         photo.tags.some(tag => tag.toLowerCase().includes(term));
+                    const matchesFolder = photo.folder.toLowerCase().includes(term);
                     
-                    if (!matchesName && !matchesTags) return false;
+                    if (!matchesName && !matchesTags && !matchesFolder) return false;
                 }
                 
                 return true;
@@ -862,29 +1008,35 @@
                     };
                     modalTags.appendChild(tagEl);
                 });
+            } else {
+                modalTags.innerHTML = '<em style="color: #999;">No tags available</em>';
             }
             
             // Display metadata
-            modalMeta.innerHTML = '';
-            if (photo.exif) {
-                const metaInfo = [];
-                if (photo.exif.camera) metaInfo.push(`Camera: ${photo.exif.camera}`);
-                if (photo.exif.date) metaInfo.push(`Date: ${photo.exif.date}`);
-                if (photo.exif.iso) metaInfo.push(`ISO: ${photo.exif.iso}`);
-                if (photo.exif.aperture) metaInfo.push(`Aperture: f/${photo.exif.aperture}`);
-                if (photo.exif.shutter) metaInfo.push(`Shutter: ${photo.exif.shutter}s`);
-                
-                modalMeta.innerHTML = metaInfo.join(' • ');
-            }
+            modalMeta.innerHTML = `
+                <div style="margin-top: 10px; color: #666; font-size: 13px;">
+                    <div>Folder: ${photo.folder || 'root'}</div>
+                    <div>Size: ${formatBytes(photo.size)}</div>
+                </div>
+            `;
             
             downloadBtn.onclick = () => {
                 const a = document.createElement('a');
                 a.href = photo.path;
                 a.download = photo.name;
+                a.target = '_blank';
                 a.click();
             };
             
             modal.classList.add('active');
+        }
+
+        // Format bytes to human readable
+        function formatBytes(bytes) {
+            if (!bytes) return 'Unknown';
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
         }
 
         // Update stats
@@ -903,6 +1055,9 @@
 
         // Setup event listeners
         function setupEventListeners() {
+            // Scan button
+            document.getElementById('scanButton').addEventListener('click', scanRepository);
+            
             // Search
             const searchInput = document.getElementById('searchInput');
             let searchTimeout;
@@ -947,10 +1102,15 @@
         // Show error message
         function showError(message) {
             const container = document.querySelector('.container');
+            const existing = container.querySelector('.error-message');
+            if (existing) existing.remove();
+            
             const errorDiv = document.createElement('div');
             errorDiv.className = 'error-message';
             errorDiv.textContent = message;
-            container.insertBefore(errorDiv, container.firstChild);
+            container.insertBefore(errorDiv, container.children[1]);
+            
+            setTimeout(() => errorDiv.remove(), 10000);
         }
 
         // Start the app
