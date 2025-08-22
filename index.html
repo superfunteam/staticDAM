@@ -205,7 +205,7 @@ async function refreshFromGitHub(){
   // Parse metadata with limited concurrency
   await mapLimit(all, 6, async (file, idx) => {
     setStatus(`Reading metadata ${idx+1}/${all.length}…`);
-    const meta = await readPhotoMeta(file.download_url, file.path);
+    const meta = await readPhotoMeta(file.download_url, file.path, file.name);
     state.meta.set(file.path, meta);
   });
   buildTags();
@@ -247,7 +247,7 @@ async function listAllImagesFromRepo(owner, repo, branch, rootPath){
 
 /* ---------- Metadata parsing ---------- */
 /* We try small range first (256KB) to read JPEG APP1/APP13 segments */
-async function readPhotoMeta(rawUrl, key){
+async function readPhotoMeta(rawUrl, key, filename){
   // Range read
   let buf;
   try{
@@ -271,11 +271,11 @@ async function readPhotoMeta(rawUrl, key){
   // Hash tags in comment/desc
   const hashTags = collectHashtags([meta.description, meta.userComment].filter(Boolean).join(' '));
   hashTags.forEach(t=>tags.add(t));
-  const title = meta.title || meta.imageDescription || '';
+  const title = meta.title || meta.imageDescription || filename || '(Untitled)';
   const description = meta.description || meta.imageDescription || '';
   const when = meta.dateTimeOriginal || meta.createDate || '';
   return {
-    title: title || '(Untitled)',
+    title: title,
     description,
     date: when,
     tags: [...tags].sort(),
@@ -584,7 +584,7 @@ function render(){
     img.loading = 'lazy';
     img.alt = meta.title || file.name;
     img.src = file.download_url; // raw URL
-    img.addEventListener('click', () => openLB(meta));
+    img.addEventListener('click', () => openLB(meta, file.name));
     const title = document.createElement('div');
     title.className = 'title';
     title.textContent = meta.title || file.name;
@@ -613,9 +613,9 @@ function toggleTag(t){
 }
 
 /* ---------- Lightbox ---------- */
-function openLB(meta){
+function openLB(meta, filename){
   lbImg.src = meta.url;
-  lbTitle.textContent = meta.title || '(Untitled)';
+  lbTitle.textContent = meta.title || filename || '(Untitled)';
   lbDate.textContent = meta.date || '—';
   lbDesc.textContent = meta.description || '';
   lbSrc.href = meta.url;
